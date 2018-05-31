@@ -4,7 +4,7 @@
 # If disk with UUID $DISK_UUID is not connected a message will appear to connect the disk to the PC.
 # Disk will be automatically mounted using fs $DISK_FS.
 
-# TODO: check rsync 
+# TODO: check that interval is a numeric value
 # TODO: fix warn message using crontab
 # TODO: warn user to work on multiple DE 
 
@@ -40,6 +40,7 @@ main() {
 		if [ $force == false ]; then
 			check_last_backup
 		fi
+		check_disk
 		mount_disk
 		backup
 	elif [ $setup == true ]; then
@@ -48,7 +49,7 @@ main() {
 }
 
 check_dependencies() {
-	rsync --version > /dev/null 2>&1 || { echo "Missing rsync" > $LOG_FILE; return 1
+	rsync --version > /dev/null 2>&1 || { echo "Missing rsync" | tee --append $LOG_FILE; return 1; }
 }
 
 check_config() {
@@ -64,9 +65,8 @@ check_config() {
 
 	# Check if all variables are set
 	for f in $CONFIG_FIELDS; do
-		echo $f
 		if [ -z "${!f}" ]; then
-			echo "Variable "$f" not set. Calling setup" >> $LOG_FILE
+			echo "Variable "$f" not set. Calling setup" | tee --append $LOG_FILE
 			return 1
 		fi 
 	done
@@ -77,11 +77,8 @@ check_config() {
 	# Check paths
 	check_paths || return 1
 
-	# Check disk
-	check_disk || return 1 
-
 	# Check interval (numeric value)
-	check_interval || return 1
+#	check_interval || return 1
 }
 
 setup() {
@@ -91,9 +88,10 @@ setup() {
 }
 
 set_config() {
+	echo "Config file is invalid or missing. Starting configuration..."
 	# Ask the user for: $SRC, $MNT_DST, $BACKUP_FOLDER, $DISK_UUID, $DISK_FS (ntfs by default), $BACKUP_INTERVALo
 	for f in $CONFIG_FIELDS; do
-		echo "Insert value for ${f}"
+		echo "Insert value for ${f}" | tee --append $LOG_FILE
 		read value
 		set_entry -k $f -v "$value" -f $CONFIG_FILE
 	done
@@ -107,7 +105,6 @@ set_entry(){
 	local value=""
 	local config_file=""
 	while getopts "k:v:f:" opt; do
-		echo $opt
         	case $opt in
 	        k)
         		key=$OPTARG
@@ -124,12 +121,13 @@ set_entry(){
 	if [ $( cat $config_file | grep $key | wc -l ) -gt 0 ]; then
 		sudo sed -i "s|^\("$key"\s*=\s*\).*\$|\1\"$value\"|" $config_file
 	else
-		echo $key"="$value >> $config_file
+		echo $key"="\"$value\" >> $config_file
 	fi
 	OPTIND=1
 }
 
 set_cronjob() {
+	echo "Setting up cronjob" | tee --append $LOG_FILE
 	croncmd=$(realpath $0)" -b > "$(dirname $(realpath $0))"/backup.log 2>&1"
 	cronjob="0 * * * * $croncmd"
 	( crontab -l | grep -v -F "$croncmd" ; echo "$cronjob" ) | crontab -
@@ -178,10 +176,13 @@ mount_disk() {
 }
 
 backup() {
+	echo "Starting backup" | tee --append $LOG_FILE
 	sudo mkdir -p $MNT_DST/$BACKUP_FOLDER
 	for f in $FOLDERS; do
+		echo "Syncing folder $f" | tee --append $LOG_FILE
 		rsync -ravz $SRC/$f $MNT_DST/$BACKUP_FOLDER
 	done
+	echo "Backup finished" | tee --append $LOG_FILE
 	set_entry -k LAST_BACKUP -v $(date +%s) -f $CONFIG_FILE
 }
 
