@@ -6,7 +6,9 @@
 
 # TODO: check that interval is a numeric value
 # TODO: fix warn message using crontab
+# TODO: display remaining time to next backup (in human readable format)
 # TODO: warn user to work on multiple DE 
+
 
 SCRIPT=`realpath $0`
 SCRIPTPATH=`dirname $SCRIPT`
@@ -49,7 +51,7 @@ main() {
 }
 
 check_dependencies() {
-	rsync --version > /dev/null 2>&1 || { echo "Missing rsync" | tee --append $LOG_FILE; return 1; }
+	rsync --version > /dev/null 2>&1 || { log "Missing rsync"; return 1; }
 }
 
 check_config() {
@@ -66,7 +68,7 @@ check_config() {
 	# Check if all variables are set
 	for f in $CONFIG_FIELDS; do
 		if [ -z "${!f}" ]; then
-			echo "Variable "$f" not set. Calling setup" | tee --append $LOG_FILE
+			log "Variable "$f" not set. Calling setup"
 			return 1
 		fi 
 	done
@@ -91,7 +93,7 @@ set_config() {
 	echo "Config file is invalid or missing. Starting configuration..."
 	# Ask the user for: $SRC, $MNT_DST, $BACKUP_FOLDER, $DISK_UUID, $DISK_FS (ntfs by default), $BACKUP_INTERVALo
 	for f in $CONFIG_FIELDS; do
-		echo "Insert value for ${f}" | tee --append $LOG_FILE
+		echo "Insert value for ${f}"
 		read value
 		set_entry -k $f -v "$value" -f $CONFIG_FILE
 	done
@@ -127,7 +129,7 @@ set_entry(){
 }
 
 set_cronjob() {
-	echo "Setting up cronjob" | tee --append $LOG_FILE
+	log "Setting up cronjob" 
 	croncmd=$(realpath $0)" -b > "$(dirname $(realpath $0))"/backup.log 2>&1"
 	cronjob="0 * * * * $croncmd"
 	( crontab -l | grep -v -F "$croncmd" ; echo "$cronjob" ) | crontab -
@@ -143,7 +145,7 @@ check_disk() {
 
 check_fs_support() {
 	if [ "$DISK_FS" == "ntfs-3g" ]; then
-		ntfs-3g --version > /dev/null 2>&1 || { echo "missing ntfs-3g support."; return 1; }
+		ntfs-3g --version > /dev/null 2>&1 || { log "missing ntfs-3g support"; return 1; }
 	else
 		[ "$(awk -v fs=$DISK_FS '($NF != "") { if (fs == $NF) { print "true"; exit } } ' /proc/filesystems)" == "true" ] || return 1
 	fi
@@ -151,12 +153,12 @@ check_fs_support() {
 
 check_paths() {
 	if [ ! -d $SRC ]; then
-		echo "Path "$SRC" does not exists;" >> $LOG_FILE
+		log "Path "$SRC" does not exist"
 		exit 1
 	fi
 
         if [ ! -d $MNT_DST ]; then
-                echo "Path "$MNT_DST" does not exists;" >> $LOG_FILE
+                log "Path "$MNT_DST" does not exist"
                 exit 1
         fi
 
@@ -171,18 +173,27 @@ warn_user() {
 	fi
 }
 
+#TODO: move in library function logging.inc.sh
+log() {
+	cmd="echo"
+	msg=$@
+	date=$(date +%F" "%R":"%S)
+	$cmd "[" $date "]" $msg | tee --append $LOG_FILE 
+}
+
 mount_disk() {
 	sudo mount -t $DISK_FS UUID=$DISK_UUID $MNT_DST 
 }
 
 backup() {
-	echo "Starting backup" | tee --append $LOG_FILE
+	log "Starting backup"
 	sudo mkdir -p $MNT_DST/$BACKUP_FOLDER
 	for f in $FOLDERS; do
-		echo "Syncing folder $f" | tee --append $LOG_FILE
-		rsync -ravz $SRC/$f $MNT_DST/$BACKUP_FOLDER
+		log "Starting syncing folder $f"
+		rsync -ravz $SRC/$f $MNT_DST/$BACKUP_FOLDER 
+		log "Finished syncing folder $f"
 	done
-	echo "Backup finished" | tee --append $LOG_FILE
+	log "Backup finished"
 	set_entry -k LAST_BACKUP -v $(date +%s) -f $CONFIG_FILE
 }
 
