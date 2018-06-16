@@ -3,22 +3,24 @@
 # These folders will be backuped using rsync afer a $BACKUP_INTERVAL.
 # If disk with UUID $DISK_UUID is not connected a message will appear to connect the disk to the PC.
 # Disk will be automatically mounted using fs $DISK_FS.
+# Notification requires notify-send and was tested on Plasma KDE.
 
-# TODO: check that interval is a numeric value
-# TODO: fix warn message using crontab
-# TODO: display remaining time to next backup (in human readable format)
-# TODO: warn user to work on multiple DE 
-
+# Libraries
+. lib/config.inc.sh
 
 SCRIPT=`realpath $0`
 SCRIPTPATH=`dirname $SCRIPT`
 
 LOG_FILE=${SCRIPTPATH}"/backup.log"
 CONFIG_FILE=${SCRIPTPATH}"/backup.conf"
+RSYNC_LOG=${SCRIPTPATH}"/rsync_$(date +%s).log"
+
+WAIT_TIME=300
 
 CONFIG_FIELDS="SRC MNT_DST BACKUP_FOLDER DISK_UUID DISK_FS BACKUP_INTERVAL FOLDERS"
 
 main() {
+	check_execution
 	check_dependencies || exit 1
 	check_config || setup
 	local backup=false
@@ -47,6 +49,13 @@ main() {
 		backup
 	elif [ $setup == true ]; then
 		setup
+	fi
+}
+
+check_execution() {
+	if pidof -o %PPID -x $(basename $0) > /dev/null; then
+		log "Script is alredy running"
+	    	exit 1
 	fi
 }
 
@@ -80,7 +89,7 @@ check_config() {
 	check_paths || return 1
 
 	# Check interval (numeric value)
-#	check_interval || return 1
+	check_interval || return 1
 }
 
 setup() {
@@ -91,7 +100,7 @@ setup() {
 
 set_config() {
 	echo "Config file is invalid or missing. Starting configuration..."
-	# Ask the user for: $SRC, $MNT_DST, $BACKUP_FOLDER, $DISK_UUID, $DISK_FS (ntfs by default), $BACKUP_INTERVALo
+	# Ask the user for: $SRC, $MNT_DST, $BACKUP_FOLDER, $DISK_UUID, $DISK_FS (ntfs by default), $BACKUP_INTERVAL
 	for f in $CONFIG_FIELDS; do
 		echo "Insert value for ${f}"
 		read value
@@ -99,33 +108,6 @@ set_config() {
 	done
 
 	set_entry -k LAST_BACKUP -v 0 -f $CONFIG_FILE
-}
-
-# TODO: add to a library lib/config.inc.sh for handling configuration files among different scripts
-set_entry(){
-	local key=""
-	local value=""
-	local config_file=""
-	while getopts "k:v:f:" opt; do
-        	case $opt in
-	        k)
-        		key=$OPTARG
-		;;
-	        v)
-			value=$OPTARG
-      		;;
-		f)
-	        	config_file=$OPTARG
-        	;;
-        	esac
-	done
-
-	if [ $( cat $config_file | grep $key | wc -l ) -gt 0 ]; then
-		sudo sed -i "s|^\("$key"\s*=\s*\).*\$|\1\"$value\"|" $config_file
-	else
-		echo $key"="\"$value\" >> $config_file
-	fi
-	OPTIND=1
 }
 
 set_cronjob() {
@@ -136,11 +118,24 @@ set_cronjob() {
 }
 
 check_last_backup() {
-	[ $(( $LAST_BACKUP + $BACKUP_INTERVAL )) -gt $(date +%s) ] && exit 0;
+	now=$(date +%s)
+	next_date=$(( $LAST_BACKUP + $BACKUP_INTERVAL))
+	[ $next_date -gt $now ] && { log "Next backup will be executed at date $(to_human_date $next_date)"; exit 0; }
+}
+
+to_human_date() {
+	ts=$1
+	echo $(date --date='@'"$ts"'')
 }
 
 check_disk() {
-	[ ! -e /dev/disk/by-uuid/$DISK_UUID ] && warn_user 
+	while [ ! -e /dev/disk/by-uuid/$DISK_UUID ]; do 
+		check_date=$(date -d "${WAIT_TIME} seconds")
+		message="Backup disk with UUID $DISK_UUID is not connected. Next check is scheduled at "$check_date
+	        notify-send "Backup script" "$message"
+        	log $message
+		sleep $WAIT_TIME
+	done
 }
 
 check_fs_support() {
@@ -161,19 +156,12 @@ check_paths() {
                 log "Path "$MNT_DST" does not exist"
                 exit 1
         fi
-
 }
 
-warn_user() {
-	kdialog --title "Scheduled backup" --yesno "Backup disk with UUID $DISK_UUID is not connected.\n Connect it now and click Ok."
-	if [ $? -eq 0 ]; then
-		main -b
-	else 
-		exit 1;
-	fi
+check_interval() {
+	[ -z "${BACKUP_INTERVAL//[0-9]}" ] || { log "Invalid backup interval: ${BACKUP_INTERVAL}"; exit 1; }
 }
 
-#TODO: move in library function logging.inc.sh
 log() {
 	cmd="echo"
 	msg=$@
@@ -187,13 +175,19 @@ mount_disk() {
 
 backup() {
 	log "Starting backup"
+	notify-send "Backup script" "Starting backup"
 	sudo mkdir -p $MNT_DST/$BACKUP_FOLDER
 	for f in $FOLDERS; do
-		log "Starting syncing folder $f"
-		rsync -ravz $SRC/$f $MNT_DST/$BACKUP_FOLDER 
-		log "Finished syncing folder $f"
+		if [ -d $SRC/$f ]; then
+			log "Starting syncing folder $f"
+			rsync -ravz $SRC/$f $MNT_DST/$BACKUP_FOLDER > $RSYNC_LOG 2>&1
+			log "Finished syncing folder $f"
+		else
+			log "WARNING: folder $SRC/$f does not exit"
+		fi
 	done
 	log "Backup finished"
+	notify-send "Backup script" "Backup finished"
 	set_entry -k LAST_BACKUP -v $(date +%s) -f $CONFIG_FILE
 }
 
